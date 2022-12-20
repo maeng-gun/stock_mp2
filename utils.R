@@ -6,7 +6,6 @@ library(jsonlite)
 library(httr)
 library(lubridate)
 library(tsibble)
-library(bizdays)
 
 con <- DBI::dbConnect(odbc::odbc(), 
                  "mysql_8.0", 
