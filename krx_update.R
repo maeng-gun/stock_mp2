@@ -1,10 +1,7 @@
-
-
 #[변수] 업데이트 대상 영업일 목록=======
 daily_update <- 
   db_obj('daily_update') %>% collect() %>%
   .$base_dt
-
 
 
 user_agent <- 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36 '
@@ -14,8 +11,8 @@ post_krx <- function(site, params){
   
   url <- list(
     data='http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd',
-    open='http://open.krx.co.kr/contents/OPN/99/OPN99000001.jspx'
-  )
+    open='http://open.krx.co.kr/contents/OPN/99/OPN99000001.jspx')
+  
   referer <- 'http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201'
   
   res <- POST(url=url[site],
@@ -62,26 +59,20 @@ get_workdays_from_krx <- function(year){
     post_krx('open',view_params)$calnd_dd %>% 
     as.Date()
   
-  start <- glue('{year}-01-01')
-  end <- glue('{year}-12-31')
+  Sys.setlocale(category = 'LC_TIME',locale = 'english')
   
-  cal <- create.calendar(
-    name = 'mycal',
-    holidays = holidays,
-    weekdays = c('saturday','sunday'),
-    start.date = start,
-    end.date = end)
+  workdays <- tk_make_weekday_sequence(
+    year,
+    remove_weekends = TRUE,
+    skip_values = holidays)
   
-  workdays <- bizseq(start, end, cal)
+  Sys.setlocale(category = 'LC_TIME',locale='Korean_Korea.utf8')
+
+  i <- ifelse(month(workdays)==3, 6, 5)
   
-  tibble(base_dt = workdays) %>% 
-    mutate(
-      fs_q_y = (base_dt - months(5)) %>% year(),
-      fs_q_q = ifelse(
-        month(base_dt)==3, 
-        3, 
-        (base_dt - months(5)) %>% quarter()),
-      fs_y = (base_dt - months(15)) %>% year()) %>% 
+  tibble(base_dt = workdays,
+         fs_q = as.yearqtr(workdays - months(i)),
+         fs_y = year(workdays-months(15))) %>% 
     fill(everything())
 }
 
@@ -90,15 +81,20 @@ year <- str_sub(daily_update, end=4) %>%
   unique() %>% as.integer() %>% 
   c(., last(.)+1)
 
-map_int(year, 
-        ~db_del('workdays', 
-                glue("year(base_dt) = {.x}")))
+map_int(year, ~db_del('workdays', 
+                      glue("year(base_dt) = {.x}")))
 
-db_upsert('workdays', 
-          map_dfr(year, get_workdays_from_krx), 
+workdays <- map_dfr(year, get_workdays_from_krx)
+
+db_upsert('workdays_2', 
+          workdays, 
           'base_dt')
-
-
+DBI::dbWriteTable(con, "workdays_2",workdays)
+db_obj("workdays_2") %>% collect() %>% 
+  arrange(desc(fs_q),desc(base_dt))
+  
+  
+library(zoo)
 # 
 # 
 # params <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01501",

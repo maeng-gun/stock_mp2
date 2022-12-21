@@ -1,11 +1,16 @@
 library(tidyverse)
-library(magrittr)
-library(glue)
-library(zeallot)
 library(jsonlite)
 library(httr)
+library(glue)
+library(timetk)
 library(lubridate)
-library(tsibble)
+library(zoo)
+
+# library(magrittr)
+# library(zeallot)
+
+
+
 
 con <- DBI::dbConnect(odbc::odbc(), 
                  "mysql_8.0", 
@@ -27,4 +32,25 @@ db_upsert <- function(table, df, cols){
 db_del <- function(table,condition){
   DBI::dbExecute(con, 
                  glue("delete from {table} where {condition}"))
+}
+
+
+get_workdays_to_be_updated <- function(){
+  last_update <- 
+    db_obj("stock_daily") %>%
+    select(base_dt) %>% 
+    distinct() %>%
+    pull() %>% max()
+  
+  last_workday <- 
+    today() - days(
+      ifelse(hour(now()) < 9, 2, 1))
+  
+  daily_update <- 
+    db_obj("workdays") %>% 
+    filter(base_dt > last_update & 
+             base_dt <= last_workday) %>%
+    pull(base_dt) 
+  
+  return(daily_update)
 }
