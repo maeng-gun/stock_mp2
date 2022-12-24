@@ -3,8 +3,11 @@ daily_update <-
   db_obj('daily_update') %>% collect() %>%
   .$base_dt
 
+daily_update <- 'a'
 
 user_agent <- 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36 '
+
+get_workdays_from_krx(2022) %>% pull(base_dt)
 
 ##[함수] KRX 사이트 크롤링(POST 방식) ====
 post_krx <- function(site, params){
@@ -59,15 +62,17 @@ get_workdays_from_krx <- function(year){
     post_krx('open',view_params)$calnd_dd %>% 
     as.Date()
   
-  Sys.setlocale(category = 'LC_TIME',locale = 'english')
+  start <- glue('{year}-01-01')
+  end <- glue('{year}-12-31')
   
-  workdays <- tk_make_weekday_sequence(
-    year,
-    remove_weekends = TRUE,
-    skip_values = holidays)
+  cal <- create.calendar(
+    name = 'mycal',
+    holidays = holidays,
+    weekdays = c('saturday','sunday'),
+    start.date = start,
+    end.date = end)
   
-  Sys.setlocale(category = 'LC_TIME',locale='Korean_Korea.utf8')
-
+  workdays <- bizseq(start, end, cal)
   i <- ifelse(month(workdays)==3, 6, 5)
   
   tibble(base_dt = workdays,

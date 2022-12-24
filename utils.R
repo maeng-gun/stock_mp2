@@ -5,6 +5,7 @@ library(glue)
 library(timetk)
 library(lubridate)
 library(zoo)
+library(bizdays)
 
 # library(magrittr)
 # library(zeallot)
@@ -54,3 +55,8 @@ get_workdays_to_be_updated <- function(){
   
   return(daily_update)
 }
+
+
+# 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
+git config --global user.email "sarangiason@naver.com"
+git config --global user.name "maeng-gun"
