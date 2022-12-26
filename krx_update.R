@@ -1,26 +1,17 @@
-#[변수] 업데이트 대상 영업일 목록=======
-daily_update <- 
-  db_obj('daily_update') %>% collect() %>%
-  .$base_dt
-
-daily_update <- 'a'
-
-user_agent <- 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36 '
-
-get_workdays_from_krx(2022) %>% pull(base_dt)
-
 ##[함수] KRX 사이트 크롤링(POST 방식) ====
+
 post_krx <- function(site, params){
   
   url <- list(
     data='http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd',
     open='http://open.krx.co.kr/contents/OPN/99/OPN99000001.jspx')
-  
+
+  user.agent <- 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36 '
   referer <- 'http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201'
   
   res <- POST(url=url[site],
               query=params, 
-              user_agent(user_agent), 
+              user_agent(user.agent), 
               add_headers(referer=referer)) %>% 
     content('t') %>% 
     fromJSON() %>% 
@@ -33,22 +24,21 @@ post_krx <- function(site, params){
 get_workdays_from_krx <- function(year){
   
   print(glue('{year}년 KRX 영업일 정보 크롤링...'))
-  
+
+  url <- 'http://open.krx.co.kr/contents/COM/GenerateOTP.jspx'
   unix_time <- 
     (as.numeric(Sys.time()) * 1000) %>% 
     round() %>% as.character()
-  
   otp_params <- list(
     bld = 'MKD/01/0110/01100305/mkd01100305_01',
     name = 'form',
     '_' = unix_time)
-  
-  url <- 'http://open.krx.co.kr/contents/COM/GenerateOTP.jspx'
-  
+  user.agent <- 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36 '
+    
   otp_code <- 
     GET(url=url,
         query=otp_params,
-        user_agent(user_agent)) %>% 
+        user_agent(user.agent)) %>% 
     content('t')
   
   view_params <- list(
@@ -82,25 +72,16 @@ get_workdays_from_krx <- function(year){
 }
 
 #[실행] DB 영업일 테이블(workdays) 갱신====
-year <- str_sub(daily_update, end=4) %>% 
-  unique() %>% as.integer() %>% 
-  c(., last(.)+1)
+last_updated_year <- 2021 #채워넣자
+this_year <- year(today())
+y <- c(last_updated_year, this_year) %>% 
+  unique()
+map_int(y, ~db_del('workdays',
+                   glue("year(base_dt) = {.x}")))
+workdays <- map_dfr(y, get_workdays_from_krx)
+db_upsert('workdays', workdays, 'base_dt')
 
-map_int(year, ~db_del('workdays', 
-                      glue("year(base_dt) = {.x}")))
-
-workdays <- map_dfr(year, get_workdays_from_krx)
-
-db_upsert('workdays_2', 
-          workdays, 
-          'base_dt')
-DBI::dbWriteTable(con, "workdays_2",workdays)
-db_obj("workdays_2") %>% collect() %>% 
-  arrange(desc(fs_q),desc(base_dt))
   
-  
-library(zoo)
-# 
 # 
 # params <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01501",
 #                mktId = "ALL",

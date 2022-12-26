@@ -58,5 +58,3 @@ get_workdays_to_be_updated <- function(){
 
 
 # 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
-git config --global user.email "sarangiason@naver.com"
-git config --global user.name "maeng-gun"
