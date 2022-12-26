@@ -18,6 +18,8 @@ post_krx <- function(site, params){
     {. ->> res_json} %>% 
     .[[ names(res_json)[1] ]] %>% 
     as_tibble()
+  
+  return(res)
 }
 
 #[함수] 특정 연도 영업일 정보 얻기 =================
@@ -66,50 +68,99 @@ get_workdays_from_krx <- function(year){
   i <- ifelse(month(workdays)==3, 6, 5)
   
   tibble(base_dt = workdays,
-         fs_q = as.yearqtr(workdays - months(i)),
-         fs_y = year(workdays-months(15))) %>% 
+         fs_q = (workdays - months(i)) %>% 
+           as.yearqtr() %>% 
+           as.character(),
+         fs_y = (workdays-months(15)) %>% 
+           year()) %>% 
     fill(everything())
 }
 
 #[실행] DB 영업일 테이블(workdays) 갱신====
-last_updated_year <- 2021 #채워넣자
-this_year <- year(today())
-y <- c(last_updated_year, this_year) %>% 
-  unique()
+last_updated_date <- 
+  db_obj('stock_daily') %>%
+  summarise(base_dt=max(base_dt)) %>% pull()
+y <- last_updated_date %>% year() %>% 
+  c(., year(today())) %>% unique()
 map_int(y, ~db_del('workdays',
                    glue("year(base_dt) = {.x}")))
 workdays <- map_dfr(y, get_workdays_from_krx)
 db_upsert('workdays', workdays, 'base_dt')
 
+
+
+#[함수] 특정 영업일 정보 얻기 =================
+
+get_stock_tables <- function(date){
   
+  print(glue('{date} 개별종목 일별지표 크롤링...'))
+  
+  #KRX정보시스템 전종목시세[12001] 페이지 정보
+  params <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01501",
+                 mktId = "ALL",
+                 trdDd = date)
+  df1 <- post_krx('data', params)
+  
+  #KRX정보시스템 전종목등락률[12002] 페이지 정보
+  params <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01602",
+                 mktId = 'ALL',
+                 strtDd = date,
+                 endDd = date,
+                 adjStkPrc_check = 'Y')
+  df2 <- post_krx('data', params) %>% 
+    select(ISU_SRT_CD, BAS_PRC)
+
+  #테이블 조인  
+  col_old <- c('ISU_SRT_CD', 'ACC_TRDVOL', 'ACC_TRDVAL', 'TDD_OPNPRC', 'TDD_HGPRC', 'TDD_LWPRC', 'TDD_CLSPRC', 'BAS_PRC', 'ISU_ABBRV', 'MKT_ID')
+  col_new <- c('sym_cd', 'trd_vol', 'trd_val', 'open', 'high', 'low', 'close', 'base_p', 'sym_nm', 'mkt_cd')
+  
+  df1 <- df1 %>% 
+    left_join(df2, by='ISU_SRT_CD')%>% 
+    select(all_of(col_old)) %>%
+    setNames(col_new) %>% 
+    mutate(across(!c(sym_cd,sym_nm,mkt_cd), parse_number)) %>%
+    filter(!is.na(sym_cd)) %>%
+    mutate(ret = (close / base_p) - 1,
+           base_dt = ymd(date)) %>%
+    relocate(base_dt, .before = 1)
+  
+  #인프라펀드/선박투자/인프라투자 종목 정보
+  blds = list(p12014 = "dbms/MDC/STAT/standard/MDCSTAT02901",
+              p12015 = "dbms/MDC/STAT/standard/MDCSTAT02801",
+              p12016 = "dbms/MDC/STAT/standard/MDCSTAT03001")
+  read <- function(bld){
+    params <- list(bld = blds[bld],
+                  trdDd = date)
+    data <- post_krx('data', params) %>% 
+      transmute(sym_cd = ISU_SRT_CD,
+                inv_com = TRUE)
+    return(data)}
+  df2 <- map_dfr(names(blds), read)
+  
+  #주요지수 구성종목 정보
+  col <- c('indIdx', 'indIdx2', 'tboxindIdx_finder_equidx0_2', 'codeNmindIdx_finder_equidx0_2')
+  params <- list(bld = "dbms/comm/finder/finder_equidx",
+                 mktsel = '1')
+  post_krx('data', params) %>% 
+    select(full_code:codeName, codeName)
+  
+  }
+  
+
+
+str(get_stock_tables('20221223'))
+
+stock_list <- 
+  db_obj('stock_info') %>% 
+  distinct(sym_cd)
+
+last_workday <- today() - 
+  (ifelse(hour(now()) < 9, 2, 1) %>% days())
+
+daily_update <- 
+  db_obj('workdays') %>% 
+  filter(base_dt > last_updated_date,
+         base_dt <= last_workday) %>% 
+  pull(base_dt) %>% strftime('%Y%m%d')
+
 # 
-# params <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01501",
-#                mktId = "ALL",
-#                trdDd = date)
-# col_old <- c('ISU_SRT_CD', 'ACC_TRDVOL', 'ACC_TRDVAL',
-#              'TDD_OPNPRC', 'TDD_HGPRC', 'TDD_LWPRC', 
-#              'TDD_CLSPRC')
-# col_new <- c('sym_cd', 'trd_vol', 'trd_val', 
-#              'open', 'high', 'low', 'close')
-# df1 <- post_krx('data', params) %>% 
-#   select(all_of(col_old)) %>% 
-#   setNames(col_new)
-# 
-# params <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01602",
-#                mktId = 'ALL',
-#                strtDd = date,
-#                endDd = date,
-#                adjStkPrc_check = 'Y')
-# col_old <- c('ISU_SRT_CD', 'BAS_PRC')
-# col_new <- c('sym_cd', 'base_p')
-# df2 <- post_krx('data', params) %>% 
-#   select(all_of(col_old)) %>% 
-#   setNames(col_new)
-# 
-# df <- df1 %>% 
-#   left_join(df2, by='sym_cd')%>% 
-#   mutate(across(!sym_cd, parse_number)) %>% 
-#   filter(!is.na(sym_cd)) %>% 
-#   mutate(ret = (close / base_p) - 1,
-#          base_dt = date) %>% 
-#   relocate(base_dt, .before = 1)
