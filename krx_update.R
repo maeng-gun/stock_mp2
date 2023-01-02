@@ -76,6 +76,8 @@ get_workdays_from_krx <- function(year){
     fill(everything())
 }
 
+
+
 #[실행] DB 영업일 테이블(workdays) 갱신====
 last_updated_date <- 
   db_obj('stock_daily') %>%
@@ -91,21 +93,21 @@ db_upsert('workdays', workdays, 'base_dt')
 
 #[함수] 특정 영업일 정보 얻기 =================
 
-get_stock_tables <- function(date){
+get_stock_tables <- function(yyyymmdd){
   
-  print(glue('{date} 개별종목 일별지표 크롤링...'))
+  print(glue('{yyyymmdd} 개별종목 일별지표 크롤링...'))
   
   #KRX정보시스템 전종목시세[12001] 페이지 정보
   params <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01501",
                  mktId = "ALL",
-                 trdDd = date)
+                 trdDd = yyyymmdd)
   df1 <- post_krx('data', params)
   
   #KRX정보시스템 전종목등락률[12002] 페이지 정보
   params <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01602",
                  mktId = 'ALL',
-                 strtDd = date,
-                 endDd = date,
+                 strtDd = yyyymmdd,
+                 endDd = yyyymmdd,
                  adjStkPrc_check = 'Y')
   df2 <- post_krx('data', params) %>% 
     select(ISU_SRT_CD, BAS_PRC)
@@ -121,7 +123,7 @@ get_stock_tables <- function(date){
     mutate(across(!c(sym_cd,sym_nm,mkt_cd), parse_number)) %>%
     filter(!is.na(sym_cd)) %>%
     mutate(ret = (close / base_p) - 1,
-           base_dt = ymd(date)) %>%
+           base_dt = ymd(yyyymmdd)) %>%
     relocate(base_dt, .before = 1)
   
   #인프라펀드/선박투자/인프라투자 종목 정보
@@ -130,7 +132,7 @@ get_stock_tables <- function(date){
               p12016 = "dbms/MDC/STAT/standard/MDCSTAT03001")
   read <- function(bld){
     params <- list(bld = blds[bld],
-                  trdDd = date)
+                  trdDd = yyyymmdd)
     data <- post_krx('data', params) %>% 
       transmute(sym_cd = ISU_SRT_CD,
                 inv_com = TRUE)
@@ -141,12 +143,96 @@ get_stock_tables <- function(date){
   col <- c('indIdx', 'indIdx2', 'tboxindIdx_finder_equidx0_2', 'codeNmindIdx_finder_equidx0_2')
   params <- list(bld = "dbms/comm/finder/finder_equidx",
                  mktsel = '1')
-  post_krx('data', params) %>% 
-    select(full_code:codeName, codeName)
+  idx <- post_krx('data', params)[, c("full_code", "short_code", "codeName", "codeName")] %>% 
+    setNames(col)
+
+  get_stock_list_in_index <- function(idx_k){
   
+    idx_kk <- str_replace(idx_k,' ','')
+    
+    tryCatch({
+      params <- idx %>% 
+        filter(tboxindIdx_finder_equidx0_2 == idx_k) %>% 
+        mutate(bld="dbms/MDC/STAT/standard/MDCSTAT00601",
+               trdDd=yyyymmdd) %>% 
+        as.list()
+      
+      df <- post_krx("data", params) %>% 
+        select(ISU_SRT_CD) %>% 
+        setNames('sym_cd') %>% 
+        mutate("{idx_kk}" := T)
+      
+      return(df)  
+    }, error=function(e) {
+      df <- data.frame(matrix(NA,0,2)) %>% 
+        set_names(c('sym_cd',idx_kk)) %>% 
+        mutate(sym_cd=as.character(sym_cd))
+      return(df)
+    })
   }
   
+  idx_k <- c('코스피 200', '코스닥 150')
+  yyyymmdd <- '20140113'
+  map(idx_k, get_stock_list_in_index) %>% 
+    reduce(~full_join(.x, .y, 'sym_cd'))
+  
+  
+  
+  
+  b <- tibble()
+  names(b) <- c('sym_cd','코스피200')
+  
+  left_join()
 
+  rm(df)
+    
+  df_list <- list()
+  col <- 
+  col_new <- "sym_cd"
+  
+  for (index in index_list_k) {
+    tryCatch({
+      params <- idx[idx$tboxindIdx_finder_equidx0_2 == index,]
+      params <- c(params, bld="dbms/MDC/STAT/standard/MDCSTAT00601", trdDd=date)
+      df <- krx_req_post("data", params)[, col]
+      names(df) <- col_new
+      df[, index] <- TRUE
+      df_list[[length(df_list) + 1]] <- df
+    }, error=function(e) {
+      cols <- c(col_new, index)
+      df <- tibble((matrix(NA, 0, 2)) %>% setNames(c('가','나')))
+      names(df) <- cols
+      df_list[[length(df_list) + 1]] <- df
+    })
+  }
+  
+  data <- Reduce(function(x, y) merge(x, y, all=TRUE, by=col_new), df_list)
+  names(data) <- c(col_new, index_list)
+  
+  red
+  
+  
+  paste2 <- function(x, y, sep = ".") paste(x, y, sep = sep)
+  letters[1:4] %>% reduce2(c("-", ".", "-"), paste2)
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+    
+  }
+  
+yyyymmdd <- '20221229'
 
 str(get_stock_tables('20221223'))
 
