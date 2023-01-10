@@ -15,7 +15,7 @@ db_upsert(table = 'workdays', df = workdays, col = 'base_dt')
 
 #[함수] 일별 종목/인덱스/ETF 정보 얻기 =================
 
-yyyymmdd <- '20221130'
+yyyymmdd <- '20221101'
 
 print(glue('{yyyymmdd} 개별종목 일별지표 크롤링...'))
 
@@ -151,6 +151,13 @@ df9 <- df6 %>%
       group_by(sym_cd) %>% 
       slice(n()),
     by='sym_cd')
+
+db_obj('stock_daily') %>% 
+  summarise(max(num_key))
+
+names(df9)
+
+
 
 
 df8 %>% slice

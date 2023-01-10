@@ -54,7 +54,7 @@ fcn_idx <- function(yyyymmdd){
 }
 
 workdays <- db_obj('workdays') %>%
-  filter(base_dt >= '20120606',
+  filter(base_dt >= '20130917',
          base_dt <= '20221031') %>% 
   pull(base_dt) %>% strftime(format='%Y%m%d')
 
