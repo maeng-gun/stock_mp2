@@ -19,7 +19,7 @@ yyyymmdd <- '20221101'
 
 print(glue('{yyyymmdd} 개별종목 일별지표 크롤링...'))
 
-#개별종목 가격정보====
+#개별종목 가격정보
 params1 <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT01501",
                 mktId = "ALL",
                 trdDd = yyyymmdd)
@@ -51,7 +51,7 @@ df3 <-
          !str_detect(sym_nm, '스팩'),
          !is.na(base_p))
 
-#인프라펀드/선박투자/인프라투자 종목 정보====
+#인프라펀드/선박투자/인프라투자 종목 정보
 blds = list(p12014 = "dbms/MDC/STAT/standard/MDCSTAT02901",
             p12015 = "dbms/MDC/STAT/standard/MDCSTAT02801",
             p12016 = "dbms/MDC/STAT/standard/MDCSTAT03001")
@@ -63,7 +63,7 @@ fcn_inv <- function(bld){
   return(data)}
 df4 <- map_dfr(names(blds), fcn_inv)
 
-#KRX 섹터정보====
+#KRX 섹터정보
 sector_match = c('^음식료·담배$' = '음식료품', 
                  '^섬유·의류$' = '섬유의복', 
                  '^종이·목재$' = '종이목재',
@@ -112,46 +112,60 @@ fcn_sec = function(mkt){
 
 df5 <- map_dfr(c('STK','KSQ'), fcn_sec)
 
-# krx-data 기초자료
-df6 <- df3  %>% 
+#krx-data 기초자료
+krx_data <- df3  %>% 
   anti_join(df4, by='sym_cd') %>% 
   left_join(df5, by='sym_cd') %>% 
   arrange(sym_cd)
 
-# fn가이드 기초자료
-df7 <- 
-  fn$get_cross_section_data(df6$sym_cd, 
+#fn가이드 기초자료
+fn_data <- 
+  fn$get_cross_section_data(krx_data$sym_cd, 
                             daily=yyyymmdd) %>% 
   tibble() %>% 
   mutate(base_dt = ymd(base_dt))
 
-#stock_info 테이블
-df8 <- db_obj('stock_info') %>% collect() %>% 
+#stock_info 테이블 업데이트====
+stock_info <- db_obj('stock_info') %>% collect() %>% 
   bind_rows(
-    df6 %>% 
+    krx_data %>% 
       select(sym_cd, base_dt, sym_nm, 
              mkt_cd, sec_krx) %>% 
       left_join(
-        df7 %>% select(sym_cd, base_dt, sec_fn_1, 
+        fn_data %>% select(sym_cd, base_dt, sec_fn_1, 
                        sec_fn_2, sec_fn_3),
         by = c('base_dt','sym_cd')) %>% 
       rename('info_update'='base_dt')) %>% 
   distinct(across(-info_update), .keep_all = T)
 
-#stock_daily 테이블
-df9 <- df6 %>% 
+# db_upsert('stock_info',
+#           stock_info %>%
+#             filter(info_update==ymd(yyyymmdd)),
+#           c('sym_cd','info_update'))
+
+#stock_daily 테이블 업데이트====
+max_key <- db_obj('stock_daily') %>% 
+  summarise(a=max(num_key)) %>% pull()
+
+stock_daily <- krx_data %>% 
   select(base_dt:base_p, ret) %>% 
   left_join(
-    df7 %>% select(base_dt,sym_cd,
+    fn_data %>% select(base_dt,sym_cd,
                    net_buy_fi:num_stock_t),
     by=c('base_dt','sym_cd')) %>% 
   left_join(
-    df8 %>%
+    stock_info %>%
       select(sym_cd, info_update) %>% 
       group_by(sym_cd) %>% 
       slice(n()),
-    by='sym_cd')
+    by='sym_cd') %>% 
+  mutate(num_key = max_key + 1:n(),
+         .before=1)
 
+<<<<<<< HEAD
+# db_upsert('stock_daily', stock_daily,
+#           c('base_dt','sym_cd'))
+=======
 db_obj('stock_daily') %>% 
   summarise(max(num_key))
 
@@ -159,25 +173,31 @@ names(df9)
 
 
 
+>>>>>>> 03bb284594dedea1c31359b15bddf0ce71036194
 
-df8 %>% slice
-get_info_update('000050')
+#stock_cons 테이블 업데이트====
+stock_cons <- stock_daily %>% 
+  select(num_key:sym_cd) %>% 
+  right_join(
+    fn_data %>% 
+      select(base_dt, sym_cd, 
+             sales_12mf:eps_down_fy2) %>% 
+      filter(!if_all(sales_12mf:eps_down_fy2, is.na)),
+    by=c('base_dt','sym_cd')) %>% 
+  select(!(base_dt:sym_cd))
 
-db_obj('stock_info') %>% collect() %>% 
-  bind_rows(df9) %>% 
-  distinct(across(-info_update), .keep_all = T)
+# db_upsert('stock_cons', stock_cons, 
+#           c('num_key'))
 
-
-df <- db_obj('stock_daily') %>% 
-  select(num_key,sym_mng:sym_reg) %>% 
-  filter(if_any(sym_mng:sym_reg, ~ .==1)) %>%
-  collect()
-
-df <- df %>% 
+#stock_managed 테이블  테이블====
+stock_managed <- stock_daily %>% 
+  select(num_key:sym_cd) %>% 
+  right_join(fn_data %>% select(base_dt:sym_reg),
+             by = c("base_dt", "sym_cd")) %>% 
   pivot_longer(sym_mng:sym_reg, 
                names_to = 'managed',
-               values_to = 'value') %>%
-  filter(value==1) %>% 
+               values_to = 'value') %>% 
+  filter(value!='정상') %>% 
   transmute(
     num_key = num_key,
     type = as.integer(str_replace_all(
@@ -185,10 +205,10 @@ df <- df %>%
                  'sym_stop'='2', 
                  'sym_reg'='3'))))
 
-df7 %>% tibble() %>% pull(eps_down_fy2) %>% .[1]
-is.nan
+# db_upsert('stock_managed', stock_managed, 
+#           c('num_key'))
 
-# 인덱스 구성종목 정보====
+#인덱스 구성종목 정보
 idx_list <- 
   post_krx('data', 
            list(bld = "dbms/comm/finder/finder_equidx",
@@ -224,25 +244,24 @@ get_stocks_in_idx <- function(params){
                 idx_code = params$idx_code)
   } else df 
 }
-df <- map_dfr(params_list, get_stocks_in_idx) 
 
-df2 <- db_obj('stock_daily') %>% 
-  filter(base_dt == yyyymmdd) %>% 
-  select(num_key:sym_cd) %>% 
-  collect()
-
-df3 <- df %>% 
-  inner_join(df2, by=c('base_dt','sym_cd')) %>% 
+#stocks_in_index 테이블 업데이트====
+stocks_in_index <- 
+  map_dfr(params_list, get_stocks_in_idx) %>% 
+  inner_join(
+    stock_daily %>% select(num_key:sym_cd), 
+    by=c('base_dt','sym_cd')) %>% 
   select(num_key, idx_code) %>% 
   arrange(num_key, idx_code)
 
-db_upsert('stocks_in_index',df3,cols=c('num_key','idx_code'))
+# db_upsert('stocks_in_index', stocks_in_index,
+#           cols=c('num_key','idx_code'))
 
-# 인덱스 가격 정보====
 
+# 인덱스 가격 정보
 mkt_nm_list <- c("01" = "X", "02" = "P", "03" = "Q", "04" = "T")
 
-get_index_table <- function(mkt){
+get_index_daily <- function(mkt){
   params1 <- list(bld = "dbms/MDC/STAT/standard/MDCSTAT00101",
                   idxIndMidclssCd = mkt,
                   trdDd = yyyymmdd,
@@ -279,11 +298,19 @@ get_index_table <- function(mkt){
   } else df1
 }
 
-df <- map_dfr(names(mkt_nm_list), get_index_table) %>% 
+# index_daily 테이블 업데이트====
+index_daily <- 
+  map_dfr(names(mkt_nm_list), get_index_daily) %>% 
   arrange(idx_code)
 
+# ETF 가격 정보
 
-#[실행] DB 일별 테이블(daily) 업데이트  ====
+# etf_daily 테이블 업데이트====
+
+
+
+
+#[실행] DB 일별 테이블(daily) 업데이트=======
 yyyymmdd <- '20221028'
 
 stock_list <- 
@@ -299,78 +326,3 @@ daily_update <-
          base_dt <= last_workday) %>% 
   pull(base_dt) %>% strftime('%Y%m%d')
 
-
-## 인덱스 구성종목 크롤링 - 일괄 업데이트====
-
-idx_list <- 
-  post_krx('data', 
-           list(bld = "dbms/comm/finder/finder_equidx",
-                mktsel = '1')) %>% 
-  mutate(mkt_nm = str_replace_all(marketName,
-                                  c("KRX"="X", "KOSPI"="P",
-                                    "KOSDAQ"="Q", "테마"="T")), 
-         .before = short_code) %>% 
-  unite('idx_code', mkt_nm:short_code,
-        sep='', remove=F) %>% 
-  select(-marketCode,-marketName)
-
-fcn_idx <- function(yyyymmdd){
-
-  print(paste(yyyymmdd, "인덱스 구성종목 크롤링..."))
-  params_list <- idx_list %>% 
-    transmute(
-      indIdx = full_code, 
-      indIdx2 = short_code, 
-      tboxindIdx_finder_equidx0_2 = codeName, 
-      codeNmindIdx_finder_equidx0_2 = codeName,
-      idx_code = idx_code,
-      bld = "dbms/MDC/STAT/standard/MDCSTAT00601",
-      trdDd = yyyymmdd) %>%
-    apply(1,as.list)
-  
-  get_stocks_in_idx <- function(params){
-    df = post_krx("data",params)
-    Sys.sleep(0.05)
-    if(nrow(df)!=0){
-      df %>% 
-        transmute(base_dt = ymd(yyyymmdd),
-                  sym_cd = ISU_SRT_CD,
-                  idx_code = params$idx_code)
-    } else df 
-  }
-  df <- map_dfr(params_list, get_stocks_in_idx) 
-  
-  df2 <- db_obj('stock_daily') %>% 
-    filter(base_dt == yyyymmdd) %>% 
-    select(num_key:sym_cd) %>% 
-    collect()
-  
-  df3 <- df %>% 
-    inner_join(df2, by=c('base_dt','sym_cd')) %>% 
-    select(num_key, idx_code) %>% 
-    arrange(num_key, idx_code)
-
-  db_upsert('stocks_in_index',df3,cols=c('num_key','idx_code'))
-}
-
-workdays <- db_obj('workdays') %>%
-  filter(base_dt >= '20110829',
-         base_dt <= '20221031') %>% 
-  pull(base_dt) %>% strftime(format='%Y%m%d')
-
-map_dfr(workdays, fcn_idx)
-
-
-df100 <- db_obj('stock_daily') %>% select(1:3) %>% 
-  right_join(
-    db_obj('stock_daily_cons'),
-    by=c('base_dt','sym_cd')
-  ) %>% 
-  select(-2:-3) %>% 
-  collect()
-
-str(df100)
-
-db_upsert('stock_cons', df100, 'num_key')
-
-DBI::
