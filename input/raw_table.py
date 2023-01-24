@@ -79,7 +79,7 @@ def get_company_fs_tables(symbols, old=None, new=None, save=True):
         select max(concat(year, quarter)) from fs_q where concat(year, quarter) < {"".join(map(str, old))}
         """)
 
-        df1 = raw.select(f'select * from company_fs_bs where year = {old_1[:4]} and quarter = {old_1[4:]}')
+        df1 = raw.select(f'select * from company_fs_bs2 where year = {old_1[:4]} and quarter = {old_1[4:]}' )
         df2 = fn.get_cross_section_data(symbols, fs=old)
 
         df3 = pd.concat([df1, df2[['sym_cd', 'year', 'quarter'] + col1]])
@@ -132,7 +132,7 @@ def get_company_fs_pl_prep_table(old=None, new=None, new_sym=None, save=True):
 
     query = f"""
     select a.sym_cd as sym_cd,
-           a.year as year,
+           a.fs_q as year,
            a.quarter as quarter,
            b.sales as sales,
            b.opr_prof as opr_prof,
@@ -141,11 +141,11 @@ def get_company_fs_pl_prep_table(old=None, new=None, new_sym=None, save=True):
            b.op_cash_flow as op_cash_flow,
            b.cash_flow as cash_flow
 
-    from company_fs_bs a left join company_fs_pl b
+    from company_fs_bs a left join company_fs_pl2 b
                                    on a.sym_cd = b.sym_cd and
-                                      a.year = b.year and
+                                      a.fs_q = b.year and
                                       a.quarter = b.quarter
-    where (concat(a.year, a.quarter) between {start} and {end})"""
+    where (concat(a.fs_q, a.quarter) between {start} and {end})"""
 
     if new_sym is not None:
         new_sym = f'({new_sym.iloc[0]})' if len(new_sym) == 1 else tuple(new_sym)

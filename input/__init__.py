@@ -35,10 +35,10 @@ def update_raw_data():
         # 신규종목 전 기간 기업재무제표 업데이트
         if not new_symbols.empty:
             start = raw.select(
-                'select year, quarter from company_fs_bs order by year, quarter limit 1'
+                'select fs_q, quarter from company_fs_bs order by fs_q, quarter limit 1'
             ).iloc[0].to_list()
             end = raw.select(
-                'select year, quarter from company_fs_bs order by year desc, quarter desc limit 1'
+                'select fs_q, quarter from company_fs_bs order by fs_q desc, quarter desc limit 1'
             ).iloc[0].to_list()
             rt.get_company_fs_tables(new_symbols, new=[start, end])
             # rt.get_company_fs_pl_prep_table(new=[start, end], new_sym=new_symbols)

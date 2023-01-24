@@ -28,12 +28,16 @@ db_query <- function(sql){
 db_obj <- function(table) tbl(con, table)
 
 db_upsert <- function(table, df, cols){
-  dbx::dbxUpsert(con, table, df, cols)
+  print(str_c(table," 테이블 DB 업데이트..."))
+  dbx::dbxUpsert(conn=con, 
+                 table=table, 
+                 records=df, 
+                 where_cols=cols)
 }
 
-db_del <- function(table,condition){
+db_del <- function(table,query){
   DBI::dbExecute(con, 
-                 glue("delete from {table} where {condition}"))
+                 glue("delete from {table} where {query}"))
 }
 
 
