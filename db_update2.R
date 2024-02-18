@@ -1,42 +1,30 @@
-source("utils.R")
-
 #[변수] 업데이트 대상 기간 얻기====
-all_stocks_list <- 
+stocks_list <- #DB 내 전종목
   db_obj('stock_info') %>% 
-  distinct(sym_cd) %>% 
+  distinct(sym_cd) %>%
+  arrange(sym_cd) %>% 
   collect()
 
-last_updated_date <- 
+last_updated_date <- #마지막 업데이트일 
   db_obj('stock_daily') %>%
   summarise(base_dt=max(base_dt, na.rm=T)) %>% 
   pull()
 
-last_workday <- today() - 
+last_date <- #전일 또는 전전일
+  today() - 
   (ifelse(hour(now()) < 9, 2, 1) %>% days())
 
-last_update_quarter <- 
-  db_obj('company_fs_bs') %>%
-  summarise(q=max(fs_q)) %>% pull(q) %>% 
-  as.yearqtr()
-
-update_years <- last_updated_date %>% year() %>% 
-  c(., year(today())) %>% unique()
-
-update_days <- 
+days_2b_updated <- #업데이트가 필요한 일자
   db_obj('workdays') %>% 
   filter(base_dt > last_updated_date,
-         base_dt <= last_workday) %>% 
-  collect()
-
-update_quarters <- 
-  update_days %>% 
-  mutate(fs_q = as.yearqtr(fs_q)) %>% 
-  filter(fs_q >= last_update_quarter) %>% 
-  distinct(fs_q)
-
-update_days <- 
-  update_days %>% pull(base_dt) %>% 
+         base_dt <= last_date) %>% 
+  collect() %>% pull(base_dt) %>% 
   strftime('%Y%m%d')
+
+years_2b_updated <- #업데이트가 필요한 연도
+  last_updated_date %>% year() %>% 
+  c(., year(today())) %>% unique()
+
   
 #[함수] 연도별 영업일 정보 얻기====
 get_workdays_from_krx <- function(year, save=F){
@@ -55,8 +43,8 @@ get_workdays_from_krx <- function(year, save=F){
   
   otp_code <- 
     GET(url=url,
-        query=otp_params,
-        user_agent(user.agent)) %>% 
+              query=otp_params,
+              user_agent(user.agent)) %>% 
     content('t')
   
   view_params <- list(
@@ -73,20 +61,20 @@ get_workdays_from_krx <- function(year, save=F){
   start <- glue('{year}-01-01')
   end <- glue('{year}-12-31')
 
-  cal <- create.calendar(
+  cal <- bizdays::create.calendar(
     name = 'mycal',
     holidays = holidays,
     weekdays = c('saturday','sunday'),
     start.date = start,
     end.date = end)
   
-  workdays <- bizseq(start, end, cal)
+  workdays <- bizdays::bizseq(start, end, cal)
   i <- ifelse(month(workdays)==3, 6, 5)
   
   res <- 
     tibble(base_dt = workdays,
            fs_q = (workdays - months(i)) %>% 
-             as.yearqtr() %>% 
+             zoo::as.yearqtr() %>% 
              as.character(),
            fs_y = (workdays-months(15)) %>% 
              year()) %>% 
@@ -104,25 +92,25 @@ get_workdays_from_krx <- function(year, save=F){
 }
 
 
-#[실행] workdays 테이블 업데이트====
-workdays <- map_dfr(update_year, 
-                    ~get_workdays_from_krx(.x, save=T))
+# #[실행] workdays 테이블 업데이트====
+# workdays <- map_dfr(years_2b_updated, 
+#                     ~get_workdays_from_krx(.x, save=F))
 
 
 #[실행] index_list 테이블 업데이트====
-index_list <- 
-  post_krx('data', 
+index_list <-
+  post_krx('data',
            list(bld = "dbms/comm/finder/finder_equidx",
-                mktsel = '1')) %>% 
+                mktsel = '1')) %>%
   mutate(mkt_nm = str_replace_all(marketName,
                                   c("KRX"="X", "KOSPI"="P",
-                                    "KOSDAQ"="Q", "테마"="T")), 
-         .before = short_code) %>% 
+                                    "KOSDAQ"="Q", "테마"="T")),
+         .before = short_code) %>%
   unite('idx_code', mkt_nm:short_code,
-        sep='', remove=F) %>% 
+        sep='', remove=F) %>%
   select(-marketCode,-marketName)
 
-db_upsert('index_list', index_list, cols='idx_code')
+db_upsert('index_list', index_list, cols=c('idx_code','codeName'))
 
 #[함수] 일별 종목 정보 얻기 =================
 get_daily_tables <- function(yyyymmdd, save=F){
@@ -229,11 +217,8 @@ get_daily_tables <- function(yyyymmdd, save=F){
   #fn가이드 기초자료
   print('- DataGuide 크롤링...')
   fn_data <- 
-    fn$get_cross_section_data(krx_data$sym_cd, 
-                              daily=yyyymmdd) %>% 
-    tibble() %>%
-    mutate(base_dt = ymd(base_dt),
-           across(everything(), ~replace_na(.x, NA)))
+    get_cross_section_data(symbols = krx_data$sym_cd, 
+                           daily = yyyymmdd)
   
   #stock_info 테이블 생성====
   print('- stock_info 테이블 생성...')
@@ -252,7 +237,8 @@ get_daily_tables <- function(yyyymmdd, save=F){
   #stock_daily 테이블 생성====
   print('- stock_daily 테이블 생성...')
   max_key <- db_obj('stock_daily') %>% 
-    summarise(a=max(num_key)) %>% pull()
+    
+    summarise(a=max(num_key, na.rm=T)) %>% pull()
   
   stock_daily <- krx_data %>% 
     select(base_dt:base_p) %>% 
@@ -401,109 +387,265 @@ get_daily_tables <- function(yyyymmdd, save=F){
 }
 
 #[실행] 일별 종목정보 일괄 업데이트=======
+# res_daily <- map(days_2b_updated, 
+#                  ~get_daily_tables(.x, save=T)) %>%
+#   pmap(bind_rows)
 
-res <- map(update_days, 
-           ~get_daily_tables(.x, save=T)) %>% 
-  pmap(bind_rows)
+#[변수] 업데이트 대상 분기 얻기====
+new_stocks_list <- 
+  db_obj('stock_info') %>% 
+  distinct(sym_cd) %>% 
+  collect() %>% 
+  anti_join(stocks_list, 
+            by='sym_cd')
 
+last_updated_date <- last(days_2b_updated)
 
-stock <- db_obj('stock_daily') %>% 
-  filter(base_dt=='2022-11-30') %>% 
-  left_join(
-    db_obj('stock_info'),
-    by=c('sym_cd', 'info_update')
-  ) %>%
-  left_join(
-    db_obj('workdays'),
-    by=c('base_dt')
-  ) %>%
-  left_join(
-    db_obj('company_fs_bs'),
-    by=c('sym_cd','fs_q')
-  ) %>%
-  left_join(
-    db_obj('stock_cons'),
-    by='num_key'
-  ) %>%
-  left_join(
-    db_obj('company_fs_pl_prep'),
-    by=c('sym_cd','fs_q')
-  ) %>% collect()
+last_updated_quarter <- #마지막 업데이트월
+  db_obj('company_fs_bs') %>%
+  summarise(q=max(fs_q, na.rm=T)) %>% pull(q)
 
-samsung <- db_obj('stock_daily') %>% 
-  filter(sym_cd=='005930') %>% 
-  left_join(
-    db_obj('workdays'),
-    by=c('base_dt')
-  ) %>%
-  left_join(
-    db_obj('company_fs_bs'),
-    by=c('sym_cd','fs_q')
-  ) %>%
-  left_join(
-    db_obj('stock_cons'),
-    by='num_key'
-  ) %>%
-  left_join(
-    db_obj('company_fs_pl_prep'),
-    by=c('sym_cd','fs_q')
-  ) %>% collect()
-
-kospi <- db_obj('index_daily') %>% 
-  filter(idx_code == 'P001') %>% 
+quarters_2b_updated <-
+  db_obj('workdays') %>%
+  filter(fs_q >= last_updated_quarter,
+         base_dt <= last_updated_date) %>% 
+  distinct(fs_q) %>% 
   collect()
+
+#[실행] 기존종목 재무제표 테이블 업데이트====
+get_company_fs_tables.old_sym <- 
+  function(fs_q, save=F){
+    print(glue("기존종목 {fs_q} 재무제표 테이블 생성"))
+    
+    col_bs <- fn_tables %>% 
+      filter(table == 'fs', bs) %>% 
+      pull(item)
+    
+    col_pl <- fn_tables %>% 
+      filter(table == 'fs', pl) %>% 
+      pull(item)
+    
+    df <- get_cross_section_data(
+      symbols = pull(stocks_list),
+      fs = fs_q)
+    
+    df_bs <- df[c('sym_cd', 'fs_q', col_bs)] %>% 
+      filter(!if_all(-sym_cd:-fs_q, is.na))
+    
+    df_pl <- df[c('sym_cd', 'fs_q', col_pl)] %>% 
+      filter(!if_all(-sym_cd:-fs_q, is.na))
+    
+    res <- list(old_company_fs_bs = df_bs,
+                old_company_fs_pl = df_pl)
+    
+    if(save){
+      cols <- list(c('sym_cd','fs_q'),
+                   c('sym_cd','fs_q'))
+      table_names <- c('company_fs_bs','company_fs_pl')
+      pmap(list(table_names, res, cols), db_upsert)
+    }
+    return(res)
+  }
+# 
+# res_q_old <- map(pull(quarters_2b_updated),
+#                  ~get_company_fs_tables.old_sym(.x, save=T)) %>%
+#   pmap(bind_rows)
+# 
+
+#[실행] 기존종목 재무제표 '전처리' 테이블 업데이트====
+
+preprocess_fs_pl <- function(df){
+  
+  df_info <- #df에서 종목/분기 컬럼만
+    df %>% select(sym_cd:fs_q)
+  
+  df_raw <- # df에서 손익지표 컬럼만
+    df %>% select(-sym_cd:-fs_q)
+  
+  df_1y <- # df에 대한 1년 lag(전년 연간지표)
+    df_info %>% 
+    mutate(year=year(fs_q)) %>% 
+    left_join(
+      df %>% filter(quarter(fs_q)==4) %>% 
+        mutate(year=year(fs_q)+1) %>% 
+        select(-fs_q)
+      ,by = c('sym_cd','year')
+    ) %>%
+    arrange(sym_cd,fs_q) %>% 
+    select(-sym_cd,-fs_q,-year)
+  
+  df_4q <- #df에 대한 4분기 lag(전년동기)
+    df %>% group_by(sym_cd) %>%
+    mutate(across(-fs_q, 
+                  ~lag(.,n=4L))) %>%
+    ungroup() %>% 
+    select(-sym_cd:-fs_q)
+  
+  df_a4q <- # 직전 4개분기 누적(gross) 손익지표
+    tibble(df_raw+df_1y-df_4q) %>% 
+    map2(df_1y, ~ifelse(is.na(.x), .y, .x)) %>% #직전 4개분기 중 결측값이 있는 경우라면 전년말 지표로 대체
+    bind_cols(df_info,.)
+  
+  #원자료에서 연도말 지표가 있다면 대체
+  df_a4q[quarter(df_a4q$fs_q)==4,] <- 
+    df %>% filter(quarter(fs_q)==4)
+  
+  df_1q <- #df에 대한 1분기 lag(전분기)
+    df %>% 
+    mutate(year=year(fs_q)) %>% 
+    group_by(sym_cd, year) %>%
+    mutate(across(-fs_q,
+                  ~lag(., n = 1L, default = 0L))) %>% 
+    ungroup() %>% 
+    select(!c(sym_cd,fs_q,year))
+  
+  df_n <- #순(net) 분기지표
+    bind_cols(df_info, df_raw - df_1q)
+  
+  df_final <- 
+    df_a4q %>% left_join(
+      df_n,
+      by = names(df_info),
+      suffix = c("_a4q","_n")
+    ) %>% 
+    mutate(earn_a4q = ifelse(is.na(earn_dom_a4q), 
+                             earn_a4q,
+                             earn_dom_a4q),
+           earn_n = ifelse(is.na(earn_dom_n),
+                           earn_n,
+                           earn_dom_n)
+    ) %>% 
+    select(-earn_dom_a4q, -earn_dom_n) %>% 
+    filter(!if_all(-sym_cd:-fs_q, is.na)) %>% 
+    mutate(fs_q = as.character(fs_q))
+  
+  
+  return(df_final)
+}
+
+
+df_old_prep <- function(save=F){
+  
+  yqtr <- 
+    quarters_2b_updated %>% 
+    mutate(fs_q = as.yearqtr(fs_q)) %>% 
+    slice(1,n()) %>% 
+    add_row(fs_q = yearqtr(year(.$fs_q[1])-1),
+            .before=1) %>%
+    pull() %>% 
+    as.character()
+  
+  start_1y <- yqtr[1]
+  start <- yqtr[2]
+  end <- yqtr[3]
+  
+  df_old <- #전처리 대상 PL 테이블(전년1분기~최근분기)
+    db_obj('company_fs_bs') %>%
+    expand(sym_cd, fs_q) %>%
+    filter(fs_q >= start_1y,
+           fs_q <= end) %>%
+    left_join(
+      db_obj('company_fs_pl') %>%
+        select(-dpr,-prop_div),
+      by = c("sym_cd", "fs_q")) %>%
+    arrange(sym_cd, fs_q) %>%
+    collect() %>%
+    mutate(fs_q = as.yearqtr(fs_q))
+  
+  res <- 
+    preprocess_fs_pl(df_old) %>%
+    filter(fs_q >= start,
+           fs_q <= end)
+  
+  if(save){
+    db_upsert('company_fs_pl_prep',
+              df_old_prep,
+              c('sym_cd', 'fs_q'))
+  }
+  
+  return(res)
+}
   
 
-save(list=c('stock','samsung','kospi'), file='stock.Rdata')
-load(file='stock.Rdata')
-rm(stock)
 
 
-unix_time =
-  (Sys.time() %>% 
-    as.numeric() * 1000
-  ) %>%
-  round() %>% 
-  as.character()
 
-otp_params <- list(
-  bld = 'MKD/01/0110/01100305/mkd01100305_01',
-  name = 'form',
-  '_' = unix_time)
+#[실행] 신규종목 재무제표 테이블 업데이트====
 
-otp_url <- 'http://open.krx.co.kr/contents/COM/GenerateOTP.jspx'
-ref <- 'http://open.krx.co.kr/contents/MKD/01/0110/01100305/MKD01100305.jsp'
-user.agent <- 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36 '
+get_company_fs_tables.new_sym <- 
+  function(save=F){
+    
+    all_fs_q <- 
+      db_obj('company_fs_bs') %>% 
+      distinct(fs_q) %>% 
+      arrange(fs_q) %>% 
+      collect()
+    
+    start_end <- 
+      all_fs_q %>%
+      slice(1,n())
+    
+    year_range = start_end %>% 
+      pull() %>% str_sub(end=4)
+    print(glue("신규종목 {paste(year_range, collapse = ' ~ ')} 재무제표 테이블 생성"))
+    
+    col_bs <- fn_tables %>% 
+      filter(table == 'fs', bs) %>% 
+      pull(item)
+    
+    col_pl <- fn_tables %>% 
+      filter(table == 'fs', pl) %>% 
+      pull(item)
+    
+    df <- get_fiscal_basis_data(
+      symbols = pull(new_stocks_list),
+      year_range = year_range)
+    
+    df_bs <- df[c('sym_cd', 'fs_q', col_bs)] %>% 
+      filter(!if_all(-sym_cd:-fs_q, is.na)) %>% 
+      semi_join(all_fs_q, by='fs_q')
+    
+    df_pl <- df[c('sym_cd', 'fs_q', col_pl)] %>% 
+      filter(!if_all(-sym_cd:-fs_q, is.na)) %>% 
+      semi_join(all_fs_q, by='fs_q')
+    
+    res <- list(new_company_fs_bs = df_bs,
+                new_company_fs_pl = df_pl)
+    
+    if(save){
+      table_names <- c('company_fs_bs','company_fs_pl')
+      cols <- list(c('sym_cd','fs_q'),
+                   c('sym_cd','fs_q'))
+      pmap(list(table_names,res,cols), db_upsert)
+    }
+    return(res)
+  }
+# 
+# if(nrow(new_stocks_list)>0){
+#   res_q_new <- get_company_fs_tables.new_sym(save=T)
+# }
 
-otp_code <- 
-  GET(url = otp_url,
-      query = otp_params,
-      add_headers(referer = ref),
-      user_agent(user.agent)
-  ) %>% 
-  content('t')
 
-otp_code
+#[실행] 신규종목 재무제표 '전처리' 테이블 업데이트====
+# 
+# new_symbols <- pull(new_stocks_list)
 
-view_params <- list(
-  search_bas_yy = '2022',
-  gridTp = 'KRX',
-  pagePath = 'contents/MKD/01/0110/01100305/MKD01100305
-.jsp',
-  code = otp_code)
-
-holidays <- 
-  post_krx('open',view_params)$calnd_dd %>% 
-  as.Date()
-
-view_url <- 'http://open.krx.co.kr/contents/OPN/99/OPN99000001.jspx'
-
-res <- POST(url = view_url,
-            query = view_params, 
-            user_agent(user.agent), 
-            add_headers(referer=ref)) %>% 
-  content('t') %>% 
-  fromJSON()
-
-res[[ names(res)[1] ]] %>% 
-  as_tibble()
+df_new <- #전년1분기 이후 PL테이블 쿼리
+  db_obj('company_fs_bs') %>% 
+  expand(sym_cd, fs_q) %>% 
+  filter(sym_cd %in% new_symbols) %>% 
+  left_join(
+    db_obj('company_fs_pl') %>% 
+      select(-dpr,-prop_div),
+    by = c("sym_cd", "fs_q")) %>% 
+  arrange(sym_cd, fs_q) %>% 
+  collect() %>% 
+  mutate(fs_q = as.yearqtr(fs_q))
+# 
+# 
+# df_new_prep <- # 기존 종목 전처리 테이블_최종
+#   preprocess_fs_pl(df_new)  
+# 
+# db_upsert('company_fs_pl_prep',
+#           df_new_prep, 
+#           c('sym_cd', 'fs_q'))
